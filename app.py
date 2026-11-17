@@ -10,7 +10,7 @@ st.set_page_config(page_title="Growth Investment - Advisor Assistant RAG", layou
 def load_rag_system():
     # Load sample dataset or create mock data if missing
     try:
-        df = pd.read_csv("sample_policy_db.csv")
+        df = pd.read_csv("sample_policy_db_comprehensive.csv")
     except FileNotFoundError:
         data = {
             'doc_id': ['DOC-001', 'DOC-002', 'DOC-003'],
