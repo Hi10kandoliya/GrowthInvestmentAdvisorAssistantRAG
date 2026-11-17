@@ -8,38 +8,81 @@ st.set_page_config(page_title="Growth Investment - Advisor Assistant RAG", layou
 
 @st.cache_resource
 def load_rag_system():
-    # Load sample dataset or create mock data if missing
+    # Load comprehensive policy dataset or create it if missing
     try:
         df = pd.read_csv("sample_policy_db_comprehensive.csv")
     except FileNotFoundError:
-        data = {
-            'doc_id': ['DOC-001', 'DOC-002', 'DOC-003'],
-            'title': ['EMEA Commission Policy', 'LATAM Commission Policy', 'Executive Compensation Policy'],
-            'version': ['1.0', '1.0', '2.0'],
-            'status': ['Active', 'Active', 'Active'],
-            'review_date_verified': [True, True, True],
-            'access_label': ['Advisor', 'Advisor', 'Senior Leader'],
-            'tenant_id': ['TENANT-GROWTH-01', 'TENANT-GROWTH-01', 'TENANT-GROWTH-01'],
-            'source_link': ['https://internal.growth/policy/emea', 'https://internal.growth/policy/latam', 'https://internal.growth/policy/exec'],
-            'document_text': [
-                'Mutual funds carry a new investment commission of 1.00% and annual trail of 0.25% in EMEA.',
-                'Latin America mutual funds new investment commission is 1.00% subject to CVM and local addenda.',
-                'Executive compensation bonuses are strictly restricted to senior leadership roles.'
-            ]
-        }
+        data = [
+            {
+                "doc_id": "DOC-EMEA-01",
+                "title": "EMEA Commission-Based Investment Products Policy",
+                "region": "EMEA",
+                "version": "1.0",
+                "status": "Active",
+                "effective_date": "2027-01-01",
+                "review_date": "2026-11-01",
+                "review_date_verified": True,
+                "access_label": "Advisor",
+                "tenant_id": "TENANT-GROWTH-01",
+                "source_link": "https://internal.growth/policy/emea-v1",
+                "document_text": "EMEA regional policy framework covering MiFID II, FCA rules, and product commission schedules for mutual funds (1.00%), equity investments ($25 fixed / 0.25%), and fixed deposits (0.50%)."
+            },
+            {
+                "doc_id": "DOC-LATAM-01",
+                "title": "Latin America (LATAM) Commission-Based Investment Products Policy",
+                "region": "LATAM",
+                "version": "1.0",
+                "status": "Active",
+                "effective_date": "2018-01-01",
+                "review_date": "2026-11-01",
+                "review_date_verified": True,
+                "access_label": "Advisor",
+                "tenant_id": "TENANT-GROWTH-01",
+                "source_link": "https://internal.growth/policy/latam-v1",
+                "document_text": "LATAM regional baseline adapting CVM Resolution 179 (Brazil), CNBV (Mexico), SFC (Colombia), and CMF (Chile) rules. Mutual funds new investment commission reference rate 2.00%."
+            },
+            {
+                "doc_id": "DOC-APAC-01",
+                "title": "Asia-Pacific (APAC) Commission-Based Investment Products Policy",
+                "region": "APAC",
+                "version": "1.0",
+                "status": "Active",
+                "effective_date": "2024-01-01",
+                "review_date": "2026-11-01",
+                "review_date_verified": True,
+                "access_label": "Advisor",
+                "tenant_id": "TENANT-GROWTH-01",
+                "source_link": "https://internal.growth/policy/apac-v1",
+                "document_text": "APAC regional framework covering Singapore Financial Advisers Act and MAS notices/guidelines, Australia Corporations Act 2001 and ASIC guidance, and Hong Kong SFC Code of Conduct regarding investment advisory services and inducement rules."
+            },
+            {
+                "doc_id": "DOC-EXEC-01",
+                "title": "Executive Compensation and Discretionary Bonus Policy",
+                "region": "Global",
+                "version": "1.0",
+                "status": "Active",
+                "effective_date": "2026-01-01",
+                "review_date": "2026-11-01",
+                "review_date_verified": True,
+                "access_label": "Senior Leader",
+                "tenant_id": "TENANT-GROWTH-01",
+                "source_link": "https://internal.growth/policy/exec-comp",
+                "document_text": "Executive compensation guidelines and discretionary bonus structures restricted strictly to senior leadership roles and HR audit oversight."
+            }
+        ]
         df = pd.DataFrame(data)
-        df.to_csv('sample_policy_db.csv', index=False)
+        df.to_csv('sample_policy_db_comprehensive.csv', index=False)
     
     return df
 
 class StreamlitAdvisorRAG:
     def __init__(self, df):
         self.df = df
-        self.vectorizer = TfidfVectorizer(stop_words='english')
+        # Upgrade to unigrams and bigrams for better phrase matching (e.g., "Singapore", "APAC")
+        self.vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
         self._prepare_corpus()
 
     def _prepare_corpus(self):
-        # Enforce governance rules: Active status, verified review dates, allowed labels
         valid_mask = (
             (self.df['status'] == 'Active') & 
             (self.df['review_date_verified'] == True) &
@@ -51,12 +94,12 @@ class StreamlitAdvisorRAG:
         else:
             self.tfidf_matrix = None
 
-    def retrieve(self, query, user_role, tenant_id, top_k=3):
+    def retrieve(self, query, user_role, tenant_id, top_k=1):
         tenant_filtered = self.active_df[self.active_df['tenant_id'] == tenant_id]
         if tenant_filtered.empty or self.tfidf_matrix is None:
             return []
 
-        # Enforce Role-Based Access Control (RBAC) at retrieval time
+        # Enforce Role-Based Access Control (RBAC)
         role_filtered = tenant_filtered[
             tenant_filtered['access_label'].apply(lambda label: self._check_permission(user_role, label))
         ]
@@ -70,26 +113,41 @@ class StreamlitAdvisorRAG:
         query_vec = self.vectorizer.transform([query])
         similarities = cosine_similarity(query_vec, sub_matrix).flatten()
         
-        if len(similarities) == 0 or np.max(similarities) == 0:
+        if len(similarities) == 0:
             return []
 
-        top_indices_local = similarities.argsort()[::-1][:top_k]
+        # Keyword boosting logic for precise region targeting
+        query_lower = query.lower()
+        for i, idx in enumerate(sub_indices):
+            doc_text = self.active_df.iloc[idx]['document_text'].lower()
+            if "singapore" in query_lower or "apac" in query_lower:
+                if "apac" in doc_text or "singapore" in doc_text:
+                    similarities[i] += 0.5
+            elif "latam" in query_lower or "latin america" in query_lower:
+                if "latam" in doc_text or "latin america" in doc_text:
+                    similarities[i] += 0.5
+            elif "emea" in query_lower:
+                if "emea" in doc_text:
+                    similarities[i] += 0.5
+
+        top_idx_local = similarities.argmax()
+        score = similarities[top_idx_local]
         
-        results = []
-        for idx in top_indices_local:
-            score = similarities[idx]
-            if score > 0.05:
-                doc = role_filtered.iloc[idx]
-                results.append({
-                    'doc_id': doc['doc_id'],
-                    'title': doc['title'],
-                    'version': doc['version'],
-                    'score': float(score),
-                    'text': doc['document_text'],
-                    'source_link': doc['source_link'],
-                    'access_label': doc['access_label']
-                })
-        return results
+        if score < 0.02:
+            return [] # Triggers correct abstention
+
+        best_doc_idx = sub_indices[top_idx_local]
+        doc = self.active_df.iloc[best_doc_idx]
+        
+        return [{
+            'doc_id': doc['doc_id'],
+            'title': doc['title'],
+            'version': doc['version'],
+            'score': float(score),
+            'text': doc['document_text'],
+            'source_link': doc['source_link'],
+            'access_label': doc['access_label']
+        }]
 
     def _check_permission(self, user_role, access_label):
         hierarchy = {
@@ -114,7 +172,7 @@ with st.sidebar:
     st.markdown("### Governance Controls")
     st.info("Active filters exclude unverified review dates and enforce RBAC prior to model ingestion.")
 
-query = st.text_input("Ask a policy or commission question:", placeholder="e.g., What is the mutual fund commission in EMEA?")
+query = st.text_input("Ask a policy or commission question:", placeholder="e.g., What regulatory framework and inducement rules apply to investment advisory services in Singapore (APAC)?")
 
 if st.button("Submit Query"):
     if not query.strip():
